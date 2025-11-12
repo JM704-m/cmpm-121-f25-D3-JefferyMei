@@ -33,7 +33,7 @@ function resolveLuck(mod: Record<string, unknown>): LuckFn | null {
 /** Deterministic RNG, prefers exported luck(); falls back to hash01. */
 const luck: LuckFn = resolveLuck(LUCK_LIB as Record<string, unknown>) ?? hash01;
 
-// Create basic UI elements
+// Basic UI
 const controlPanelDiv = document.createElement("div");
 controlPanelDiv.id = "controlPanel";
 document.body.append(controlPanelDiv);
@@ -46,7 +46,7 @@ const statusPanelDiv = document.createElement("div");
 statusPanelDiv.id = "statusPanel";
 statusPanelDiv.innerHTML = `
   <div><strong>Inventory:</strong> <span id="invText">Empty</span></div>
-  <div><strong>Goal:</strong> hold a token of value <span id="goalText">16</span></div>
+  <div><strong>Goal:</strong> hold a token of value <span id="goalText">32</span></div>
   <div id="msg"></div>
 `;
 document.body.append(statusPanelDiv);
@@ -55,30 +55,29 @@ const invTextEl = statusPanelDiv.querySelector("#invText") as HTMLSpanElement;
 const msgEl = statusPanelDiv.querySelector("#msg") as HTMLDivElement;
 const goalTextEl = statusPanelDiv.querySelector("#goalText") as HTMLSpanElement;
 
-// Our classroom location & tunables (exactly as specified)
+// Fixed location of classroom
 const CLASSROOM_LATLNG = leaflet.latLng(
   36.997936938057016,
   -122.05703507501151,
 );
 
 const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_DEGREES = 1e-4; // grid size ≈ house-sized
-const NEIGHBORHOOD_SIZE = 8; // kept for parity with the sample
-const CACHE_SPAWN_PROBABILITY = 0.1; // deterministic spawn probability
-const INTERACT_RANGE_STEPS = 3; // near-range interaction in cell steps
-const WIN_VALUE = 16; // win threshold
+const TILE_DEGREES = 1e-4; // house-sized grid
+const CACHE_SPAWN_PROBABILITY = 0.1; // deterministic spawn prob
+const INTERACT_RANGE_STEPS = 5; // circle radius (in grid steps)
+const WIN_VALUE = 32;
 
-// Mark NEIGHBORHOOD_SIZE as used
-void NEIGHBORHOOD_SIZE;
+// approx meters/degree for circle visualization
+const METERS_PER_DEG = 111_320;
 
-// Create the map
+// Map
 const map = leaflet.map(mapDiv, {
   center: CLASSROOM_LATLNG,
   zoom: GAMEPLAY_ZOOM_LEVEL,
-  minZoom: GAMEPLAY_ZOOM_LEVEL,
-  maxZoom: GAMEPLAY_ZOOM_LEVEL,
-  zoomControl: false,
-  scrollWheelZoom: false,
+  minZoom: 16,
+  maxZoom: 20,
+  zoomControl: true,
+  scrollWheelZoom: true,
 });
 
 leaflet
@@ -89,8 +88,7 @@ leaflet
   })
   .addTo(map);
 
-// Fixed player marker at the classroom
-leaflet
+const playerMarker = leaflet
   .circleMarker(CLASSROOM_LATLNG, {
     radius: 6,
     color: "#1d4ed8",
@@ -100,48 +98,50 @@ leaflet
   .bindTooltip("You")
   .addTo(map);
 
-// Types
 type CellID = { i: number; j: number };
 
 // Helpers
-/** Returns a stable string key for a cell id. */
+// ---------------------------------------------------------------------------
 function cellKey(c: CellID): string {
   return `${c.i}:${c.j}`;
 }
-
-/** Converts latitude/longitude to grid cell indices. */
 function latLngToCell(lat: number, lng: number): CellID {
   return {
     i: Math.floor(lat / TILE_DEGREES),
     j: Math.floor(lng / TILE_DEGREES),
   };
 }
-
-/** Returns Leaflet bounds literal for a cell rectangle. */
 function cellToBounds(c: CellID): leaflet.LatLngBoundsLiteral {
   const south = c.i * TILE_DEGREES;
   const west = c.j * TILE_DEGREES;
   const north = (c.i + 1) * TILE_DEGREES;
   const east = (c.j + 1) * TILE_DEGREES;
   return [
-    [south, west], // SW
-    [north, east], // NE
+    [south, west],
+    [north, east],
   ];
 }
-
-/** Returns geographic center of a cell. */
-function cellCenter(c: CellID): leaflet.LatLngExpression {
+// Returns geographic center of a cell as a tuple [lat, lng]
+function cellCenter(c: CellID): leaflet.LatLngTuple {
   const b = cellToBounds(c);
-  return [(b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2];
+  const lat = (b[0][0] + b[1][0]) / 2;
+  const lng = (b[0][1] + b[1][1]) / 2;
+  return [lat, lng];
 }
 
-/** Chebyshev distance in grid steps between two cells. */
-function chebyshevDistance(a: CellID, b: CellID): number {
-  return Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j));
+// Converts cell id to a Leaflet LatLng object
+function cellToLatLng(c: CellID): leaflet.LatLng {
+  const [lat, lng] = cellCenter(c);
+  return leaflet.latLng(lat, lng);
 }
 
-// Deterministic initial contents + session modifications
-/** Deterministic initial token value */
+function euclidSteps(a: CellID, b: CellID): number {
+  const dx = a.i - b.i;
+  const dy = a.j - b.j;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// World state
 function initialTokenValue(c: CellID): number | undefined {
   const k = cellKey(c);
   if (luck(`${k}|spawn`) >= CACHE_SPAWN_PROBABILITY) return undefined;
@@ -151,18 +151,12 @@ function initialTokenValue(c: CellID): number | undefined {
   if (r < 0.75) return 4;
   return 8;
 }
-
-/** Stores only cells changed by the player in this session. */
 const modified = new Map<string, number | undefined>();
-
-/** Reads the current value of a cell */
 function readCell(c: CellID): number | undefined {
   const k = cellKey(c);
   if (modified.has(k)) return modified.get(k);
   return initialTokenValue(c);
 }
-
-/** Writes a new value for a cell to the session modifications. */
 function writeCell(c: CellID, v: number | undefined): void {
   modified.set(cellKey(c), v);
 }
@@ -170,13 +164,10 @@ function writeCell(c: CellID, v: number | undefined): void {
 // Inventory & feedback
 let held: number | undefined = undefined;
 
-/** Updates inventory text and goal value in the status panel. */
 function updateInventoryUI(): void {
-  invTextEl.textContent = held === undefined ? "Empty" : String(held);
   goalTextEl.textContent = String(WIN_VALUE);
+  invTextEl.textContent = held === undefined ? "Empty" : String(held);
 }
-
-/** Shows a short, transient message under the goal line. */
 function flash(msg: string, cls: "ok" | "err" | "info" = "info"): void {
   msgEl.className = cls;
   msgEl.textContent = msg;
@@ -184,22 +175,71 @@ function flash(msg: string, cls: "ok" | "err" | "info" = "info"): void {
     if (msgEl.textContent === msg) msgEl.textContent = "";
   }, 1400);
 }
-
-/** Checks and announces win when held value >= WIN_VALUE. */
 function checkWin(): void {
   if (held !== undefined && held >= WIN_VALUE) {
     flash(`You win! Held token value = ${held}`, "ok");
   }
 }
 
-// Layers & rendering
-const rectLayer = leaflet.layerGroup().addTo(map);
-const labelLayer = leaflet.layerGroup().addTo(map);
+// Player movement
+let playerCell: CellID = latLngToCell(
+  CLASSROOM_LATLNG.lat,
+  CLASSROOM_LATLNG.lng,
+);
 
-/** Draws cell rectangles and visible token labels to the current viewport edges. */
+function movePlayer(di: number, dj: number): void {
+  playerCell = { i: playerCell.i + di, j: playerCell.j + dj };
+  const ll = cellToLatLng(playerCell);
+  playerMarker.setLatLng(ll);
+  map.panTo(ll, { animate: true });
+  drawGridToScreenEdges();
+}
+function makeButton(label: string, onClick: () => void): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.textContent = label;
+  btn.style.marginRight = "6px";
+  btn.onclick = onClick;
+  return btn;
+}
+controlPanelDiv.append(
+  makeButton("⬆ N", () => movePlayer(1, 0)),
+  makeButton("⬇ S", () => movePlayer(-1, 0)),
+  makeButton("⬅ W", () => movePlayer(0, -1)),
+  makeButton("➡ E", () => movePlayer(0, 1)),
+);
+
+// Layers & rendering
+const gridLayer = leaflet.layerGroup().addTo(map);
+const tokenTileLayer = leaflet.layerGroup().addTo(map);
+const labelLayer = leaflet.layerGroup().addTo(map);
+const rangeLayer = leaflet.layerGroup().addTo(map);
+
+function forgetOffscreen(
+  mod: Map<string, number | undefined>,
+  visibleKeys: Set<string>,
+): void {
+  for (const k of Array.from(mod.keys())) {
+    if (!visibleKeys.has(k)) mod.delete(k);
+  }
+}
+function drawRangeCircle(): void {
+  rangeLayer.clearLayers();
+  const radiusMeters = INTERACT_RANGE_STEPS * TILE_DEGREES * METERS_PER_DEG;
+  leaflet
+    .circle(cellToLatLng(playerCell), {
+      radius: radiusMeters,
+      color: "#22c55e",
+      weight: 2,
+      fillColor: "#22c55e",
+      fillOpacity: 0.08,
+    })
+    .addTo(rangeLayer);
+}
 function drawGridToScreenEdges(): void {
-  rectLayer.clearLayers();
+  gridLayer.clearLayers();
+  tokenTileLayer.clearLayers();
   labelLayer.clearLayers();
+  drawRangeCircle();
 
   const b = map.getBounds();
   const sw = b.getSouthWest();
@@ -207,32 +247,45 @@ function drawGridToScreenEdges(): void {
 
   const minC = latLngToCell(sw.lat, sw.lng);
   const maxC = latLngToCell(ne.lat, ne.lng);
-  const playerCell = latLngToCell(CLASSROOM_LATLNG.lat, CLASSROOM_LATLNG.lng);
+
+  const visible = new Set<string>();
+  for (let i = minC.i - 1; i <= maxC.i + 1; i++) {
+    for (let j = minC.j - 1; j <= maxC.j + 1; j++) {
+      visible.add(cellKey({ i, j }));
+    }
+  }
+  forgetOffscreen(modified, visible);
 
   for (let i = minC.i - 1; i <= maxC.i + 1; i++) {
     for (let j = minC.j - 1; j <= maxC.j + 1; j++) {
       const id: CellID = { i, j };
-      const canInteract =
-        chebyshevDistance(id, playerCell) <= INTERACT_RANGE_STEPS;
 
-      const rect = leaflet
+      leaflet
         .rectangle(cellToBounds(id), {
-          color: canInteract ? "#10b981" : "#9ca3af",
+          color: "#9ca3af",
           weight: 1,
-          fillOpacity: canInteract ? 0.15 : 0.08,
+          fillOpacity: 0.05,
         })
-        .addTo(rectLayer);
+        .addTo(gridLayer);
 
       const val = readCell(id);
       if (val !== undefined) {
+        leaflet
+          .rectangle(cellToBounds(id), {
+            color: "#f59e0b",
+            fillColor: "#fcd34d",
+            weight: 1,
+            fillOpacity: 0.6,
+          })
+          .addTo(tokenTileLayer);
+
         leaflet
           .marker(cellCenter(id), {
             interactive: false,
             icon: leaflet.divIcon({
               className: "cellLabel",
               html:
-                '<div style="font-weight:700;background:rgba(255,255,255,.85);' +
-                'border:1px solid rgba(0,0,0,.15);padding:2px 6px;border-radius:6px">' +
+                '<div style="font-weight:700;letter-spacing:.5px;text-shadow:0 1px 0 rgba(0,0,0,.15)">' +
                 val +
                 "</div>",
             }),
@@ -240,7 +293,12 @@ function drawGridToScreenEdges(): void {
           .addTo(labelLayer);
       }
 
-      rect.on("click", () => {
+      const clickableRect = leaflet
+        .rectangle(cellToBounds(id), { weight: 0, fillOpacity: 0 })
+        .addTo(gridLayer);
+
+      clickableRect.on("click", () => {
+        const canInteract = euclidSteps(id, playerCell) <= INTERACT_RANGE_STEPS;
         if (!canInteract) {
           flash("Too far away to interact.", "err");
           return;
@@ -256,35 +314,58 @@ function drawGridToScreenEdges(): void {
 function handleCellClick(id: CellID): void {
   const current = readCell(id);
 
-  // Pick up when hand empty and cell has a token
-  if (held === undefined && current !== undefined) {
-    held = current;
-    writeCell(id, undefined);
-    updateInventoryUI();
-    flash(`Picked up ${held}.`, "ok");
-    drawGridToScreenEdges();
-    checkWin();
+  // Hand empty: pick up from a non-empty cell (cell clears)
+  if (held === undefined) {
+    if (current !== undefined) {
+      held = current;
+      writeCell(id, undefined);
+      updateInventoryUI();
+      flash(`Picked up ${held}.`, "ok");
+      drawGridToScreenEdges();
+      checkWin();
+      return;
+    }
+    flash("Nothing happened.", "info");
     return;
   }
 
-  // Equal-merge crafting: place held onto same-valued cell => double
-  if (held !== undefined && current !== undefined && current === held) {
-    const newVal = held * 2;
-    writeCell(id, newVal);
+  // Holding v
+  const v = held;
+
+  // Place onto empty
+  if (current === undefined) {
+    writeCell(id, v);
     held = undefined;
     updateInventoryUI();
-    flash(`Crafted ${newVal}!`, "ok");
+    flash(`Placed ${v}.`, "ok");
+    drawGridToScreenEdges();
+    return;
+  }
+
+  // Equal-value merge -> cell becomes 2v and the held token is consumed
+  if (current === v) {
+    writeCell(id, v * 2);
+    held = undefined; // consume held
+    updateInventoryUI();
+    flash(`Merged to ${v * 2}!`, "ok");
     drawGridToScreenEdges();
     checkWin();
     return;
   }
 
-  // Otherwise no effect
-  flash("Nothing happened.", "info");
+  // Different values -> swap
+  const w = current;
+  writeCell(id, v);
+  held = w;
+  updateInventoryUI();
+  flash(`Swapped: cell=${v}, holding=${w}.`, "ok");
+  drawGridToScreenEdges();
 }
 
 // Boot
 updateInventoryUI();
+playerMarker.setLatLng(cellToLatLng(playerCell));
 drawGridToScreenEdges();
-// Locked zoom per sample; redraw on panning to keep edges filled
+
 map.on("moveend", drawGridToScreenEdges);
+map.on("zoomend", drawGridToScreenEdges);
