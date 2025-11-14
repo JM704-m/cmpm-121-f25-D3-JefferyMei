@@ -11,8 +11,9 @@ Leaflet for the map interface
 
 Deno + Vite for build and deployment
 
-Assignments
-D3.a: Core mechanics
+Assignments：
+
+## D3.a: Core mechanics
 
 Steps：
 
@@ -34,7 +35,7 @@ Add crafting (equal-value tokens combine → double value)
 
 Detect win when holding a token of value 16
 
-D3.b: Globe-spanning Gameplay
+## D3.b: Globe-spanning Gameplay
 
 Key technical challenge: Keep the grid filled to the screen edges while the player moves; use a world-anchored grid (i/j based on lat/lng and fixed cell size).
 Key gameplay challenge: Let players roam and repeatedly collect/merge to reach a higher target value.
@@ -73,3 +74,15 @@ Steps：
 - Win condition: target token value 32
 
 - Cleanup and deployment verification (two successful runs)
+
+## D3.c: Object persistence
+
+Key technical challenge: modified cells should remember their state even after leaving the visible map area, without storing unmodified cells.
+
+### Steps:
+
+- Introduce a `Map` to store only modified cells
+- reat all unmodified cells as flyweight values generated on demand
+- Remove off-screen forgetting behavior
+- Ensure modified cells reappear correctly when player scrolls back
+- Leave cross-page persistence for the next assignment

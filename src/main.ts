@@ -101,16 +101,17 @@ const playerMarker = leaflet
 type CellID = { i: number; j: number };
 
 // Helpers
-// ---------------------------------------------------------------------------
 function cellKey(c: CellID): string {
   return `${c.i}:${c.j}`;
 }
+
 function latLngToCell(lat: number, lng: number): CellID {
   return {
     i: Math.floor(lat / TILE_DEGREES),
     j: Math.floor(lng / TILE_DEGREES),
   };
 }
+
 function cellToBounds(c: CellID): leaflet.LatLngBoundsLiteral {
   const south = c.i * TILE_DEGREES;
   const west = c.j * TILE_DEGREES;
@@ -168,6 +169,7 @@ function updateInventoryUI(): void {
   goalTextEl.textContent = String(WIN_VALUE);
   invTextEl.textContent = held === undefined ? "Empty" : String(held);
 }
+
 function flash(msg: string, cls: "ok" | "err" | "info" = "info"): void {
   msgEl.className = cls;
   msgEl.textContent = msg;
@@ -175,6 +177,7 @@ function flash(msg: string, cls: "ok" | "err" | "info" = "info"): void {
     if (msgEl.textContent === msg) msgEl.textContent = "";
   }, 1400);
 }
+
 function checkWin(): void {
   if (held !== undefined && held >= WIN_VALUE) {
     flash(`You win! Held token value = ${held}`, "ok");
@@ -194,6 +197,7 @@ function movePlayer(di: number, dj: number): void {
   map.panTo(ll, { animate: true });
   drawGridToScreenEdges();
 }
+
 function makeButton(label: string, onClick: () => void): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.textContent = label;
@@ -201,6 +205,7 @@ function makeButton(label: string, onClick: () => void): HTMLButtonElement {
   btn.onclick = onClick;
   return btn;
 }
+
 controlPanelDiv.append(
   makeButton("⬆ N", () => movePlayer(1, 0)),
   makeButton("⬇ S", () => movePlayer(-1, 0)),
@@ -214,14 +219,7 @@ const tokenTileLayer = leaflet.layerGroup().addTo(map);
 const labelLayer = leaflet.layerGroup().addTo(map);
 const rangeLayer = leaflet.layerGroup().addTo(map);
 
-function forgetOffscreen(
-  mod: Map<string, number | undefined>,
-  visibleKeys: Set<string>,
-): void {
-  for (const k of Array.from(mod.keys())) {
-    if (!visibleKeys.has(k)) mod.delete(k);
-  }
-}
+/** Draws a circular interaction range around the player. */
 function drawRangeCircle(): void {
   rangeLayer.clearLayers();
   const radiusMeters = INTERACT_RANGE_STEPS * TILE_DEGREES * METERS_PER_DEG;
@@ -235,6 +233,11 @@ function drawRangeCircle(): void {
     })
     .addTo(rangeLayer);
 }
+
+/**
+ * Rebuilds the visible grid from scratch each time based on
+ * deterministic values + the persistent modified map.
+ */
 function drawGridToScreenEdges(): void {
   gridLayer.clearLayers();
   tokenTileLayer.clearLayers();
@@ -247,14 +250,6 @@ function drawGridToScreenEdges(): void {
 
   const minC = latLngToCell(sw.lat, sw.lng);
   const maxC = latLngToCell(ne.lat, ne.lng);
-
-  const visible = new Set<string>();
-  for (let i = minC.i - 1; i <= maxC.i + 1; i++) {
-    for (let j = minC.j - 1; j <= maxC.j + 1; j++) {
-      visible.add(cellKey({ i, j }));
-    }
-  }
-  forgetOffscreen(modified, visible);
 
   for (let i = minC.i - 1; i <= maxC.i + 1; i++) {
     for (let j = minC.j - 1; j <= maxC.j + 1; j++) {
