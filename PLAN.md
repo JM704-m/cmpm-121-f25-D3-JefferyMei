@@ -1,4 +1,5 @@
-D3: World of Bits
+## D3: World of Bits
+
 Game Design Vision
 
 The player interacts with a fixed map around the classroom. Nearby grid cells can be clicked to collect or craft tokens of increasing value.
@@ -86,3 +87,30 @@ Key technical challenge: modified cells should remember their state even after l
 - Remove off-screen forgetting behavior
 - Ensure modified cells reappear correctly when player scrolls back
 - Leave cross-page persistence for the next assignment
+
+## D3.d: Gameplay Across Real-world Space and Time
+
+## Design Plan
+
+- Replace button-based movement with optional geolocation-based movement so the
+  player can move by physically walking around in the real world.
+- Implement a movement controller interface and create two movement strategies:
+  one for button-based control and one for geolocation-based control. Expose only
+  a unified API so the rest of the game does not depend on which system is used.
+- Use the browser’s `localStorage` to save and restore the player’s state,
+  including player position, modified cells, inventory, and goal progress.
+- Add UI controls for switching between movement modes (button vs. geolocation).
+  Mode may also be determined by the URL query string (e.g. `index.html?movement=gps`).
+- Add a “New Game” button to reset the saved data and restart the world.
+- Add on-screen goal indicators and show a victory message when the win
+  condition is met.
+
+### Steps
+
+- Add movement controller interface.
+- Implement button movement strategy.
+- Implement geolocation movement strategy.
+- Add toggle for switching movement types.
+- Save / load game state via `localStorage`.
+- Add “New Game” reset button.
+- Add victory screen or message.

@@ -15,23 +15,30 @@ function hash01(s: string): number {
   return (h >>> 0) / 0xffffffff;
 }
 
-/** Type for a deterministic RNG used by spawning logic. */
-type LuckFn = (k: string) => number;
+type LuckFn = (key: string) => number;
 
-/** Resolve a luck-like function from the _luck module without using `any`. */
+/** Try to find a luck-like function exported from _luck.ts. */
 function resolveLuck(mod: Record<string, unknown>): LuckFn | null {
-  const keys = ["luck", "Luck", "random", "rng", "hash", "default"] as const;
-  for (const k of keys) {
-    const maybe = mod[k];
-    if (typeof maybe === "function") {
-      return (maybe as (k: string) => number);
+  const candidateNames = [
+    "luck",
+    "Luck",
+    "random",
+    "rng",
+    "hash",
+    "default",
+  ] as const;
+  for (const name of candidateNames) {
+    const value = mod[name];
+    if (typeof value === "function") {
+      return value as (key: string) => number;
     }
   }
   return null;
 }
 
-/** Deterministic RNG, prefers exported luck(); falls back to hash01. */
-const luck: LuckFn = resolveLuck(LUCK_LIB as Record<string, unknown>) ?? hash01;
+/** Deterministic RNG used everywhere in the world. */
+const luck: LuckFn = resolveLuck(LUCK_LIB as Record<string, unknown>) ??
+  hash01;
 
 // Basic UI
 const controlPanelDiv = document.createElement("div");
@@ -52,25 +59,36 @@ statusPanelDiv.innerHTML = `
 document.body.append(statusPanelDiv);
 
 const invTextEl = statusPanelDiv.querySelector("#invText") as HTMLSpanElement;
+const goalTextEl = statusPanelDiv.querySelector(
+  "#goalText",
+) as HTMLSpanElement;
 const msgEl = statusPanelDiv.querySelector("#msg") as HTMLDivElement;
-const goalTextEl = statusPanelDiv.querySelector("#goalText") as HTMLSpanElement;
 
-// Fixed location of classroom
+// New game button
+const newGameButton = document.createElement("button");
+newGameButton.textContent = "New Game";
+newGameButton.style.marginTop = "6px";
+statusPanelDiv.append(newGameButton);
+
+// Tunable world parameters
+/** Classroom location used as default center. */
 const CLASSROOM_LATLNG = leaflet.latLng(
   36.997936938057016,
   -122.05703507501151,
 );
 
 const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_DEGREES = 1e-4; // house-sized grid
-const CACHE_SPAWN_PROBABILITY = 0.1; // deterministic spawn prob
-const INTERACT_RANGE_STEPS = 5; // circle radius (in grid steps)
-const WIN_VALUE = 32;
-
-// approx meters/degree for circle visualization
+const TILE_DEGREES = 1e-4; // ~ house-sized grid cells
+const CACHE_SPAWN_PROBABILITY = 0.1;
+const INTERACT_RANGE_STEPS = 5;
 const METERS_PER_DEG = 111_320;
+const WIN_VALUE = 32;
+const STORAGE_KEY = "cmpm121-d3-world-of-bits";
 
-// Map
+// Movement modes for the facade
+type MovementMode = "buttons" | "geolocation";
+
+// Map and basic geometry helpers
 const map = leaflet.map(mapDiv, {
   center: CLASSROOM_LATLNG,
   zoom: GAMEPLAY_ZOOM_LEVEL,
@@ -100,7 +118,6 @@ const playerMarker = leaflet
 
 type CellID = { i: number; j: number };
 
-// Helpers
 function cellKey(c: CellID): string {
   return `${c.i}:${c.j}`;
 }
@@ -122,7 +139,8 @@ function cellToBounds(c: CellID): leaflet.LatLngBoundsLiteral {
     [north, east],
   ];
 }
-// Returns geographic center of a cell as a tuple [lat, lng]
+
+/** Cell center as [lat, lng] tuple. */
 function cellCenter(c: CellID): leaflet.LatLngTuple {
   const b = cellToBounds(c);
   const lat = (b[0][0] + b[1][0]) / 2;
@@ -130,7 +148,7 @@ function cellCenter(c: CellID): leaflet.LatLngTuple {
   return [lat, lng];
 }
 
-// Converts cell id to a Leaflet LatLng object
+/** Cell center as Leaflet LatLng. */
 function cellToLatLng(c: CellID): leaflet.LatLng {
   const [lat, lng] = cellCenter(c);
   return leaflet.latLng(lat, lng);
@@ -142,7 +160,8 @@ function euclidSteps(a: CellID, b: CellID): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-// World state
+// World state: deterministic initial values + persistent modified cells
+/** Initial token value; undefined means empty. */
 function initialTokenValue(c: CellID): number | undefined {
   const k = cellKey(c);
   if (luck(`${k}|spawn`) >= CACHE_SPAWN_PROBABILITY) return undefined;
@@ -152,22 +171,27 @@ function initialTokenValue(c: CellID): number | undefined {
   if (r < 0.75) return 4;
   return 8;
 }
+
 const modified = new Map<string, number | undefined>();
+
+/** Read current cell value, considering persistent modifications. */
 function readCell(c: CellID): number | undefined {
   const k = cellKey(c);
   if (modified.has(k)) return modified.get(k);
   return initialTokenValue(c);
 }
+
+/** Persist new cell value. */
 function writeCell(c: CellID, v: number | undefined): void {
   modified.set(cellKey(c), v);
 }
 
-// Inventory & feedback
+// Inventory and messaging (single-slot inventory)
 let held: number | undefined = undefined;
 
 function updateInventoryUI(): void {
-  goalTextEl.textContent = String(WIN_VALUE);
   invTextEl.textContent = held === undefined ? "Empty" : String(held);
+  goalTextEl.textContent = String(WIN_VALUE);
 }
 
 function flash(msg: string, cls: "ok" | "err" | "info" = "info"): void {
@@ -175,7 +199,7 @@ function flash(msg: string, cls: "ok" | "err" | "info" = "info"): void {
   msgEl.textContent = msg;
   setTimeout(() => {
     if (msgEl.textContent === msg) msgEl.textContent = "";
-  }, 1400);
+  }, 1500);
 }
 
 function checkWin(): void {
@@ -184,20 +208,30 @@ function checkWin(): void {
   }
 }
 
-// Player movement
+// Movement facade (buttons vs geolocation) — D3.d core
 let playerCell: CellID = latLngToCell(
   CLASSROOM_LATLNG.lat,
   CLASSROOM_LATLNG.lng,
 );
+let movementMode: MovementMode = "buttons";
+let geoWatchId: number | null = null;
 
-function movePlayer(di: number, dj: number): void {
-  playerCell = { i: playerCell.i + di, j: playerCell.j + dj };
+/** Move the character to a given cell and update map + marker. */
+function setPlayerCell(newCell: CellID): void {
+  playerCell = newCell;
   const ll = cellToLatLng(playerCell);
   playerMarker.setLatLng(ll);
   map.panTo(ll, { animate: true });
   drawGridToScreenEdges();
+  saveGameState();
 }
 
+/** Move by grid steps (used only when in button mode). */
+function movePlayerBySteps(di: number, dj: number): void {
+  setPlayerCell({ i: playerCell.i + di, j: playerCell.j + dj });
+}
+
+/** Small helper to create control buttons. */
 function makeButton(label: string, onClick: () => void): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.textContent = label;
@@ -206,20 +240,109 @@ function makeButton(label: string, onClick: () => void): HTMLButtonElement {
   return btn;
 }
 
+// Arrow buttons for button-based movement
+const northButton = makeButton("⬆ N", () => movePlayerBySteps(1, 0));
+const southButton = makeButton("⬇ S", () => movePlayerBySteps(-1, 0));
+const westButton = makeButton("⬅ W", () => movePlayerBySteps(0, -1));
+const eastButton = makeButton("➡ E", () => movePlayerBySteps(0, 1));
+
+// Toggle between buttons and geolocation
+const movementToggleButton = makeButton("Use GPS", () => {
+  const nextMode: MovementMode = movementMode === "buttons"
+    ? "geolocation"
+    : "buttons";
+  setMovementMode(nextMode);
+});
+
+// Attach controls
 controlPanelDiv.append(
-  makeButton("⬆ N", () => movePlayer(1, 0)),
-  makeButton("⬇ S", () => movePlayer(-1, 0)),
-  makeButton("⬅ W", () => movePlayer(0, -1)),
-  makeButton("➡ E", () => movePlayer(0, 1)),
+  northButton,
+  southButton,
+  westButton,
+  eastButton,
+  movementToggleButton,
 );
 
-// Layers & rendering
+/** Start geolocation-based movement (real-time tracking). */
+function startGeolocation(): void {
+  if (!navigator.geolocation) {
+    flash("Geolocation API not available.", "err");
+    return;
+  }
+  if (geoWatchId !== null) return;
+
+  geoWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+
+      // Convert real-world GPS to grid cell
+      const cell = latLngToCell(lat, lng);
+
+      // IMPORTANT FIX:
+      // Always override the stored player position with LIVE GPS
+      playerCell = cell;
+      saveGameState();
+
+      // Immediately show the real location
+      setPlayerCell(cell);
+    },
+    (err) => {
+      flash("Unable to read geolocation.", "err");
+      console.error(err);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 0, // DO NOT USE OLD GPS CACHE
+      timeout: 5000, // Fail faster
+    },
+  );
+}
+
+/** Stop geolocation tracking. */
+function stopGeolocation(): void {
+  if (geoWatchId !== null) {
+    navigator.geolocation.clearWatch(geoWatchId);
+    geoWatchId = null;
+  }
+}
+
+/**
+ * Facade entry point: the rest of the game only calls this to change
+ * movement mode. Implementation details (buttons vs GPS) are hidden
+ * behind this function.
+ */
+function setMovementMode(mode: MovementMode): void {
+  if (movementMode === mode) return;
+
+  // Tear down previous implementation
+  if (movementMode === "geolocation") {
+    stopGeolocation();
+  }
+
+  movementMode = mode;
+
+  const usingButtons = movementMode === "buttons";
+  northButton.disabled = !usingButtons;
+  southButton.disabled = !usingButtons;
+  westButton.disabled = !usingButtons;
+  eastButton.disabled = !usingButtons;
+  movementToggleButton.textContent = usingButtons ? "Use GPS" : "Use Buttons";
+
+  if (movementMode === "geolocation") {
+    startGeolocation();
+  }
+
+  saveGameState();
+}
+
+// Rendering layers
 const gridLayer = leaflet.layerGroup().addTo(map);
 const tokenTileLayer = leaflet.layerGroup().addTo(map);
 const labelLayer = leaflet.layerGroup().addTo(map);
 const rangeLayer = leaflet.layerGroup().addTo(map);
 
-/** Draws a circular interaction range around the player. */
+/** Draw circular interaction radius around the player. */
 function drawRangeCircle(): void {
   rangeLayer.clearLayers();
   const radiusMeters = INTERACT_RANGE_STEPS * TILE_DEGREES * METERS_PER_DEG;
@@ -234,10 +357,7 @@ function drawRangeCircle(): void {
     .addTo(rangeLayer);
 }
 
-/**
- * Rebuilds the visible grid from scratch each time based on
- * deterministic values + the persistent modified map.
- */
+/** Rebuild the visible grid and tokens from world state. */
 function drawGridToScreenEdges(): void {
   gridLayer.clearLayers();
   tokenTileLayer.clearLayers();
@@ -304,12 +424,10 @@ function drawGridToScreenEdges(): void {
   }
 }
 
-// Interaction logic
-/** Handles clicking a cell: pickup if hand empty, or equal-merge to double. */
+// Interaction rules (single-slot inventory + crafting)
 function handleCellClick(id: CellID): void {
   const current = readCell(id);
 
-  // Hand empty: pick up from a non-empty cell (cell clears)
   if (held === undefined) {
     if (current !== undefined) {
       held = current;
@@ -317,6 +435,7 @@ function handleCellClick(id: CellID): void {
       updateInventoryUI();
       flash(`Picked up ${held}.`, "ok");
       drawGridToScreenEdges();
+      saveGameState();
       checkWin();
       return;
     }
@@ -324,43 +443,118 @@ function handleCellClick(id: CellID): void {
     return;
   }
 
-  // Holding v
   const v = held;
 
-  // Place onto empty
   if (current === undefined) {
     writeCell(id, v);
     held = undefined;
     updateInventoryUI();
     flash(`Placed ${v}.`, "ok");
     drawGridToScreenEdges();
+    saveGameState();
     return;
   }
 
-  // Equal-value merge -> cell becomes 2v and the held token is consumed
   if (current === v) {
     writeCell(id, v * 2);
-    held = undefined; // consume held
+    held = undefined;
     updateInventoryUI();
     flash(`Merged to ${v * 2}!`, "ok");
     drawGridToScreenEdges();
+    saveGameState();
     checkWin();
     return;
   }
 
-  // Different values -> swap
   const w = current;
   writeCell(id, v);
   held = w;
   updateInventoryUI();
   flash(`Swapped: cell=${v}, holding=${w}.`, "ok");
   drawGridToScreenEdges();
+  saveGameState();
 }
 
-// Boot
-updateInventoryUI();
-playerMarker.setLatLng(cellToLatLng(playerCell));
-drawGridToScreenEdges();
+// localStorage persistence
+type SavedState = {
+  playerCell: CellID;
+  held: number | null;
+  modified: Record<string, number | null>;
+  movementMode: MovementMode;
+};
 
+function saveGameState(): void {
+  const obj: SavedState = {
+    playerCell,
+    held: held ?? null,
+    movementMode,
+    modified: Object.fromEntries(
+      Array.from(modified.entries()).map(([k, v]) => [k, v ?? null]),
+    ),
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+  } catch {
+    // Ignore storage errors (e.g. private mode).
+  }
+}
+
+function loadGameState(): void {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as SavedState;
+
+    if (
+      parsed.playerCell &&
+      typeof parsed.playerCell.i === "number" &&
+      typeof parsed.playerCell.j === "number"
+    ) {
+      playerCell = { i: parsed.playerCell.i, j: parsed.playerCell.j };
+    }
+
+    held = parsed.held ?? undefined;
+
+    modified.clear();
+    if (parsed.modified) {
+      for (const [k, v] of Object.entries(parsed.modified)) {
+        modified.set(k, v ?? undefined);
+      }
+    }
+
+    movementMode = parsed.movementMode === "geolocation"
+      ? "geolocation"
+      : "buttons";
+  } catch {
+    // Ignore malformed state.
+  }
+}
+
+/** Clear all progress and restart at the classroom location. */
+function resetGameState(): void {
+  modified.clear();
+  held = undefined;
+  playerCell = latLngToCell(CLASSROOM_LATLNG.lat, CLASSROOM_LATLNG.lng);
+  movementMode = "buttons";
+  saveGameState();
+  updateInventoryUI();
+  setPlayerCell(playerCell);
+  setMovementMode("buttons");
+  flash("Started a new game.", "info");
+}
+
+// Boot sequence
+// Load persisted state before first draw
+loadGameState();
+updateInventoryUI();
+setPlayerCell(playerCell);
+setMovementMode(movementMode);
+
+// Redraw on map movement / zoom
 map.on("moveend", drawGridToScreenEdges);
 map.on("zoomend", drawGridToScreenEdges);
+
+// New game button
+newGameButton.onclick = () => {
+  resetGameState();
+};
