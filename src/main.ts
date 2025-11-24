@@ -275,17 +275,24 @@ function startGeolocation(): void {
     (pos) => {
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
+      const newLatLng = leaflet.latLng(lat, lng);
 
-      // Convert real-world GPS to grid cell
-      const cell = latLngToCell(lat, lng);
+      // FIX START
 
-      // IMPORTANT FIX:
-      // Always override the stored player position with LIVE GPS
-      playerCell = cell;
+      // Update logic: Calculate the grid cell based on GPS, but don't snap the visual marker to it yet.
+      playerCell = latLngToCell(lat, lng);
+
+      // Visual update: Move the marker to the EXACT GPS location for smooth movement.
+      playerMarker.setLatLng(newLatLng);
+
+      // Visual update: Center the map on the player's real location.
+      map.panTo(newLatLng);
+
+      // Save state and redraw the grid
       saveGameState();
+      drawGridToScreenEdges();
 
-      // Immediately show the real location
-      setPlayerCell(cell);
+      // FIX END
     },
     (err) => {
       flash("Unable to read geolocation.", "err");
@@ -293,8 +300,8 @@ function startGeolocation(): void {
     },
     {
       enableHighAccuracy: true,
-      maximumAge: 0, // DO NOT USE OLD GPS CACHE
-      timeout: 5000, // Fail faster
+      maximumAge: 0,
+      timeout: 5000,
     },
   );
 }
@@ -346,8 +353,9 @@ const rangeLayer = leaflet.layerGroup().addTo(map);
 function drawRangeCircle(): void {
   rangeLayer.clearLayers();
   const radiusMeters = INTERACT_RANGE_STEPS * TILE_DEGREES * METERS_PER_DEG;
+
   leaflet
-    .circle(cellToLatLng(playerCell), {
+    .circle(playerMarker.getLatLng(), {
       radius: radiusMeters,
       color: "#22c55e",
       weight: 2,
